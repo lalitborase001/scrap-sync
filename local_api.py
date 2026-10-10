@@ -2,14 +2,10 @@
 Runs without Docker, connects to real Bedrock, uses in-memory storage."""
 import base64
 import json
-import mimetypes
-import os
 import re
 import time
 import uuid
-from decimal import Decimal
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import parse_qs, urlparse
 
 import boto3
 
