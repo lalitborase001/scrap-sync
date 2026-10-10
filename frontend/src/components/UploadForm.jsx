@@ -3,7 +3,7 @@ import { useState } from "react";
 // TODO: after `sam deploy`, copy the AnalyzeApiUrl output into VITE_API_URL (or paste it here).
 const API_URL =
   import.meta.env.VITE_API_URL ??
-  "https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com/Prod/analyze";
+  "http://127.0.0.1:3000/analyze";
 
 // Read a File as raw base64 (strips the "data:...;base64," prefix).
 const toBase64 = (file) =>
@@ -26,12 +26,17 @@ export default function UploadForm({ idToken }) {
     setStatus("uploading");
 
     try {
+      const headers = {
+        "Content-Type": "application/json",
+      };
+      // Only add Authorization header if not using local API
+      if (!API_URL.includes("127.0.0.1") && idToken) {
+        headers.Authorization = idToken;
+      }
+
       const res = await fetch(API_URL, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: idToken, // Cognito authorizer expects the raw token
-        },
+        headers,
         body: JSON.stringify({
           content_type: file.type,
           image_base64: await toBase64(file),
