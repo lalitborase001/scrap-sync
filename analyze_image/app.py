@@ -20,10 +20,17 @@ import boto3
 s3 = boto3.client("s3")
 # TODO: the Lambda's region must have Claude 3 Haiku enabled (Bedrock console -> Model access).
 bedrock = boto3.client("bedrock-runtime")
-table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
 
-BUCKET_NAME = os.environ["BUCKET_NAME"]
-MODEL_ID = os.environ["MODEL_ID"]  # set in template.yaml (BedrockModelId parameter)
+BUCKET_NAME = os.environ.get("BUCKET_NAME", "local-bucket")
+MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+TABLE_NAME = os.environ.get("TABLE_NAME", "EWasteLots")
+
+# Local development fallback: use in-memory storage if DynamoDB is not available
+LOCAL_MODE = os.environ.get("LOCAL_MODE", "false").lower() == "true"
+local_lots = {}  # In-memory storage for local development
+
+if not LOCAL_MODE:
+    table = boto3.resource("dynamodb").Table(TABLE_NAME)
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 PROMPT = (
@@ -89,7 +96,15 @@ def save_lot(image_key, items, value, owner="s3-upload"):
         "owner": owner,
         "created_at": int(time.time()),
     }
-    table.put_item(Item=lot)
+    
+    if LOCAL_MODE:
+        # Local development: store in memory
+        local_lots[lot["LotId"]] = lot
+        print(f"[LOCAL] Saved lot {lot['LotId']} to in-memory storage")
+    else:
+        # Production: store in DynamoDB
+        table.put_item(Item=lot)
+    
     return lot
 
 
@@ -98,6 +113,11 @@ def handle_s3(event):
     for rec in event["Records"]:
         bucket = rec["s3"]["bucket"]["name"]
         key = unquote_plus(rec["s3"]["object"]["key"])
+        
+        if LOCAL_MODE:
+            print(f"[LOCAL] S3 trigger not supported in local mode, skipping")
+            continue
+            
         obj = s3.get_object(Bucket=bucket, Key=key)
         media_type = obj.get("ContentType")
         if media_type not in ALLOWED_TYPES:
@@ -118,9 +138,15 @@ def handle_api(event):
                 "body": json.dumps({"error": "content_type must be jpeg, png, gif or webp"})}
 
     image_bytes = base64.b64decode(payload["image_base64"])
-    # Stored under api/ so it does NOT re-trigger the uploads/ S3 notification.
-    key = f"api/{uuid.uuid4()}.{media_type.split('/')[1]}"
-    s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=image_bytes, ContentType=media_type)
+    
+    if LOCAL_MODE:
+        # Local mode: skip S3 upload, use a fake key
+        key = f"local/{uuid.uuid4()}.{media_type.split('/')[1]}"
+        print(f"[LOCAL] Skipping S3 upload, using fake key: {key}")
+    else:
+        # Stored under api/ so it does NOT re-trigger the uploads/ S3 notification.
+        key = f"api/{uuid.uuid4()}.{media_type.split('/')[1]}"
+        s3.put_object(Bucket=BUCKET_NAME, Key=key, Body=image_bytes, ContentType=media_type)
 
     items, value = analyze(image_bytes, media_type)
     # Cognito user id (sub) comes from the authorizer claims.
