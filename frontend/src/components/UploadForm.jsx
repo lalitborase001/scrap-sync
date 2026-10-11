@@ -79,20 +79,63 @@ export default function UploadForm({ idToken }) {
         headers.Authorization = idToken;
       }
 
+      console.log(`[UploadForm] Converting ${file.name} (${file.type}, ${file.size} bytes) to Base64...`);
+      const base64Data = await toBase64(file);
+      console.log(`[UploadForm] Sending POST request to ${API_URL}...`);
+
       const res = await fetch(API_URL, {
         method: "POST",
         headers,
         body: JSON.stringify({
           content_type: file.type,
-          image_base64: await toBase64(file),
+          image_base64: base64Data,
         }),
       });
-      if (!res.ok) throw new Error(`Request failed: ${res.status}`);
-      setResult(await res.json());
+
+      if (!res.ok) {
+        let errorDetails = `HTTP ${res.status}: ${res.statusText}`;
+        try {
+          const resJson = await res.json();
+          errorDetails = resJson.error || resJson.message || JSON.stringify(resJson);
+        } catch {
+          try {
+            const resText = await res.text();
+            if (resText) errorDetails = resText;
+          } catch {
+            // keep fallback errorDetails
+          }
+        }
+        const customError = new Error(`Request failed with status ${res.status}: ${errorDetails}`);
+        customError.status = res.status;
+        customError.statusText = res.statusText;
+        customError.errorDetails = errorDetails;
+        throw customError;
+      }
+
+      const data = await res.json();
+      console.log("[UploadForm] Analysis success response:", data);
+      setResult(data);
       setStatus("done");
     } catch (err) {
-      console.error(err);
-      setErrorMsg("Something went wrong with the upload. Please try again.");
+      console.error("[UploadForm Error] Detailed fetch failure:", {
+        message: err.message,
+        name: err.name,
+        status: err.status,
+        statusText: err.statusText,
+        errorDetails: err.errorDetails,
+        endpoint: API_URL,
+        stack: err.stack,
+        originalError: err,
+      });
+
+      const displayMessage =
+        err.errorDetails ||
+        (err.status ? `Server error (${err.status}): ${err.message}` : null) ||
+        (err.name === "TypeError"
+          ? `Network or CORS error connecting to ${API_URL}. Ensure local API is running on port 3000.`
+          : `Upload failed: ${err.message}`);
+
+      setErrorMsg(displayMessage);
       setStatus("error");
     }
   };
