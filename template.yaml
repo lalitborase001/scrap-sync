@@ -59,6 +59,18 @@ Resources:
       StreamSpecification:
         StreamViewType: NEW_IMAGE
 
+  EwasteBidsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: EwasteBids
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: LotId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: LotId
+          KeyType: HASH
+
   # ------------------------------------------------------------------- Auth
   UserPool:
     Type: AWS::Cognito::UserPool
@@ -92,7 +104,7 @@ Resources:
     Properties:
       StageName: Prod
       Cors:
-        AllowMethods: "'POST,OPTIONS'"
+        AllowMethods: "'POST,GET,OPTIONS'"
         AllowHeaders: "'Content-Type,Authorization'"
         AllowOrigin: !Ref FrontendOrigin
       Auth:
@@ -111,7 +123,7 @@ Resources:
       Timeout: 60 # vision call can take a while
       Environment:
         Variables:
-          TABLE_NAME: !Ref EWasteLotsTable
+          TABLE_NAME: !Ref EwasteBidsTable
           BUCKET_NAME: !Sub "${AWS::StackName}-uploads-${AWS::AccountId}-${AWS::Region}"
           MODEL_ID: !Ref BedrockModelId
       Policies:
@@ -129,11 +141,14 @@ Resources:
                 - s3:GetObject
                 - s3:PutObject
               Resource: !Sub "arn:aws:s3:::${AWS::StackName}-uploads-${AWS::AccountId}-${AWS::Region}/*"
-        # DynamoDB: put new lots into this table only.
+        # DynamoDB: put new lots into EwasteBids and EWasteLots tables.
         - Statement:
             - Effect: Allow
-              Action: dynamodb:PutItem
-              Resource: !GetAtt EWasteLotsTable.Arn
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !GetAtt EwasteBidsTable.Arn
+                - !GetAtt EWasteLotsTable.Arn
       Events:
         # Path 1: image dropped straight into s3://<bucket>/uploads/
         # (the API path below writes to api/, so the two never trigger each other)
@@ -147,13 +162,15 @@ Resources:
                 Rules:
                   - Name: prefix
                     Value: uploads/
-        # Path 2: authenticated POST from the React app
+        # Path 2: POST from the React app
         ApiPost:
           Type: Api
           Properties:
             RestApiId: !Ref Api
             Path: /analyze
             Method: post
+            Auth:
+              Authorizer: NONE
 
   SendAlertFunction:
     Type: AWS::Serverless::Function
@@ -189,10 +206,57 @@ Resources:
               Filters:
                 - Pattern: '{"eventName": ["INSERT"]}'
 
+  ClaimScrapFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: claim_scrap/
+      Handler: app.lambda_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref EwasteBidsTable
+          ALERT_PHONE_NUMBER: !Ref AlertPhoneNumber
+      Policies:
+        # SNS: publish SMS to verified phone numbers
+        - Statement:
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: "*"
+        # DynamoDB: read scrap item details from EwasteBids and EWasteLots tables
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:Scan
+              Resource:
+                - !GetAtt EwasteBidsTable.Arn
+                - !GetAtt EWasteLotsTable.Arn
+      Events:
+        ClaimPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /claim
+            Method: post
+            Auth:
+              Authorizer: NONE
+        LotsGet:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /lots
+            Method: get
+            Auth:
+              Authorizer: NONE
+
 Outputs:
   AnalyzeApiUrl:
     Description: POST endpoint for the React app (VITE_API_URL)
     Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/Prod/analyze"
+  ClaimApiUrl:
+    Description: POST endpoint for claiming scrap and sending SMS alert
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/Prod/claim"
   UserPoolId:
     Value: !Ref UserPool
   UserPoolClientId:
